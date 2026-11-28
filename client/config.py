@@ -33,6 +33,10 @@ class BrowserConfig:
     downloads_dir: str = ""
     encryption_key: str = ""
     onboarding_completed: bool = False
+    # --- Active browsing engine (Phase 2) ---
+    # Persisted so the UI engine selector survives restarts. The --engine CLI
+    # flag (if provided) still overrides this value for a single run.
+    engine: str = "github"  # "github" | "local"
     # --- Local engine (Phase 1) ---
     local_headless: bool = True
     local_cdp_url: str = ""  # e.g. http://127.0.0.1:9222 to attach the user's running browser
@@ -82,6 +86,9 @@ class BrowserConfig:
                 downloads_dir=data.get("downloads_dir", ""),
                 encryption_key=data.get("encryption_key", ""),
                 onboarding_completed=bool(data.get("onboarding_completed", False)),
+                engine=data.get("engine", "github")
+                if data.get("engine", "github") in ("github", "local")
+                else "github",
                 local_headless=bool(data.get("local_headless", True)),
                 local_cdp_url=data.get("local_cdp_url", ""),
             )

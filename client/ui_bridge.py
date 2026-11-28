@@ -147,22 +147,76 @@ class WebviewApiBridge:
             "repo": getattr(self._ui.config, "github_repo", ""),
             "branch": getattr(self._ui.config, "branch", "main"),
             "encryption_key": getattr(self._ui.config, "encryption_key", ""),
+            "engine": getattr(self._ui.transport, "name", "github"),
         }
 
+    # ---------------- Engine management (Phase 2) ----------------
+
+    def get_engine(self) -> Dict[str, Any]:
+        """Current engine state for the UI badge and Settings section."""
+        cfg = self._ui.config
+        return {
+            "engine": getattr(self._ui.transport, "name", "github"),
+            "local_headless": bool(getattr(cfg, "local_headless", True)),
+            "local_cdp_url": getattr(cfg, "local_cdp_url", ""),
+        }
+
+    def save_local_settings(
+        self,
+        engine: str = "",
+        local_headless: bool = True,
+        local_cdp_url: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Persists engine choice + local-engine options and applies the engine
+        switch immediately (no app restart needed).
+        """
+        try:
+            cfg = self._ui.config
+            cfg.local_headless = bool(local_headless)
+            cfg.local_cdp_url = str(local_cdp_url or "").strip()
+            if engine:
+                res = self._ui.set_engine(str(engine).strip().lower())
+                if not res.get("success"):
+                    # config values are already saved; only the live switch failed
+                    cfg.save()
+                    return res
+            cfg.save()
+            return {
+                "success": True,
+                "engine": getattr(self._ui.transport, "name", "github"),
+            }
+        except Exception as e:
+            logger.error(f"Save local settings error: {e}")
+            return {"success": False, "error": str(e)}
+
     def get_daemon_status(self) -> Dict[str, Any]:
-        alive = self._ui.transport.is_daemon_alive()
-        return {"alive": alive}
+        transport = self._ui.transport
+        # Phase 2: engines without a persistent worker report supported=False
+        if not hasattr(transport, "is_daemon_alive"):
+            return {"alive": False, "supported": False}
+        return {
+            "alive": bool(transport.is_daemon_alive()),
+            "supported": True,
+        }
 
     def toggle_daemon(self, enable: Optional[bool] = None) -> Dict[str, Any]:
-        alive = self._ui.transport.is_daemon_alive()
+        transport = self._ui.transport
+        if not hasattr(transport, "is_daemon_alive"):
+            return {
+                "alive": False,
+                "supported": False,
+                "msg": "حالت Daemon فقط برای موتور GitHub در دسترس است.",
+            }
+        alive = transport.is_daemon_alive()
         target = not alive if enable is None else bool(enable)
         if not target and alive:
-            ok, msg = self._ui.transport.stop_daemon()
-            return {"alive": False, "msg": "رانر زنده متوقف شد."}
+            ok, msg = transport.stop_daemon()
+            return {"alive": False, "supported": True, "msg": "رانر زنده متوقف شد."}
         elif target and not alive:
-            ok, msg = self._ui.transport.start_daemon(idle_timeout_min=30)
-            return {"alive": True, "msg": "درخواست راه‌اندازی رانر زنده ارسال شد. ظرف ۳۰ الی ۴۵ ثانیه آماده می‌شود..."}
-        return {"alive": alive, "msg": ""}
+            ok, msg = transport.start_daemon(idle_timeout_min=30)
+            return {"alive": True, "supported": True, "msg": "درخواست راه‌اندازی رانر زنده ارسال شد. ظرف ۳۰ الی ۴۵ ثانیه آماده می‌شود..."}
+        return {"alive": alive, "supported": True, "msg": ""}
 
     def save_config(
         self, token: str, repo: str, branch: str = "main", search_url: str = "", encryption_key: str = ""

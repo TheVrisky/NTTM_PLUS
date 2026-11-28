@@ -49,9 +49,8 @@ def main():
     parser.add_argument(
         "--engine",
         type=str,
-        default="github",
-        choices=sorted(list_available_engines()),
-        help="موتور مرور: github (پیش‌فرض، وضعیت موجود) یا local (در حال توسعه - فاز ۱)",
+        default="",
+        help="موتور مرور: github یا local. اگر داده نشود از آخرین انتخاب ذخیره‌شده در تنظیمات (فاز ۲) استفاده می‌شود",
     )
     args = parser.parse_args()
 
@@ -59,7 +58,15 @@ def main():
 
     # 1. Load or initialize configuration
     config = BrowserConfig.load()
-    if args.engine == "github" and not config.is_configured():
+
+    # Engine resolution (Phase 2): CLI flag overrides the persisted choice.
+    engine_choice = (args.engine or getattr(config, "engine", "github") or "github").strip().lower()
+    if engine_choice not in list_available_engines():
+        logger.warning("Unknown engine '%s' in settings; falling back to 'github'.", engine_choice)
+        engine_choice = "github"
+    config.engine = engine_choice
+
+    if engine_choice == "github" and not config.is_configured():
         logger.warning(
             "GitHub PAT or Repository not configured yet. Please configure via UI Settings."
         )
@@ -69,7 +76,7 @@ def main():
 
     # 3. Build the browsing engine through the Phase 0 factory.
     #    Everything below this line is engine-agnostic.
-    engine = create_engine(args.engine, config, session_manager)
+    engine = create_engine(engine_choice, config, session_manager)
     logger.info("Active engine: %s", engine.name)
 
     # 4. Initialize and launch UI Shell

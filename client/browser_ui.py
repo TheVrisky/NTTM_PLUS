@@ -32,6 +32,123 @@ __all__ = [
 logger = logging.getLogger("BrowserUI")
 
 
+# ---------------------------------------------------------------------------
+# Phase 2: Engine integration patch
+# ---------------------------------------------------------------------------
+# Injected just before </body> of the generated shell HTML. Keeps all engine
+# UI (status-bar badge + "Browsing Engine" section inside the Settings modal)
+# in one small, revertible block instead of editing the 112KB ui_templates.py.
+_PHASE2_ENGINE_PATCH = """
+<script>
+/* NTTM_PLUS Phase 2 patch: engine badge + engine selector (injected by browser_ui.py) */
+(function () {
+  function ready(fn) {
+    if (document.readyState !== 'loading') { fn(); }
+    else { document.addEventListener('DOMContentLoaded', fn); }
+  }
+
+  ready(function () {
+    var engineState = { engine: 'github' };
+
+    function applyEngine(name) {
+      engineState.engine = (name === 'local') ? 'local' : 'github';
+      var isLocal = engineState.engine === 'local';
+      var dot = document.getElementById('engine-badge-dot');
+      var txt = document.getElementById('engine-badge-text');
+      if (dot) dot.style.background = isLocal ? '#22c55e' : '#8b5cf6';
+      if (txt) txt.textContent = isLocal ? 'Engine: Local (this machine)' : 'Engine: GitHub (remote)';
+      var lt = document.getElementById('loading-text');
+      if (lt) lt.textContent = isLocal ? 'Rendering locally on your machine...' : 'Processing request on GitHub...';
+      var bg = document.getElementById('eng-btn-github');
+      var bl = document.getElementById('eng-btn-local');
+      if (bg && bl) {
+        bg.className = isLocal ? 'btn-modal-cancel' : 'btn-modal-save';
+        bl.className = isLocal ? 'btn-modal-save' : 'btn-modal-cancel';
+      }
+      var lo = document.getElementById('eng-local-opts');
+      if (lo) lo.style.display = isLocal ? 'block' : 'none';
+    }
+
+    // 1) Engine badge in the bottom status bar
+    var bar = document.querySelector('.status-bar');
+    if (bar && !document.getElementById('engine-badge')) {
+      var badge = document.createElement('div');
+      badge.id = 'engine-badge';
+      badge.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;color:#9ca3af;margin-right:14px;';
+      badge.innerHTML =
+        '<span id="engine-badge-dot" style="width:8px;height:8px;border-radius:50%;background:#8b5cf6;display:inline-block;"></span>' +
+        '<span id="engine-badge-text">Engine: ...</span>';
+      bar.insertBefore(badge, bar.firstChild);
+    }
+
+    // 2) Browsing Engine section inside the Settings modal
+    var modal = document.querySelector('#settings-modal .modal');
+    if (modal && !document.getElementById('eng-btn-github')) {
+      var actions = modal.querySelector('.modal-actions');
+      var sec = document.createElement('div');
+      sec.innerHTML =
+        '<h2 style="margin-top:20px;">Browsing Engine</h2>' +
+        '<div class="form-group"><label>Active engine:</label>' +
+        '<div style="display:flex;gap:8px;">' +
+        '<button type="button" id="eng-btn-github" style="flex:1;">GitHub (Remote Runner)</button>' +
+        '<button type="button" id="eng-btn-local" style="flex:1;">Local (This Machine)</button>' +
+        '</div></div>' +
+        '<div class="form-group" id="eng-local-opts" style="display:none;">' +
+        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;">' +
+        '<input type="checkbox" id="cfg-local-headless" /> Headless mode (hide the browser window)</label>' +
+        '<label style="margin-top:10px;">CDP URL (attach to your own open browser, optional):</label>' +
+        '<input type="text" id="cfg-local-cdp" placeholder="http://127.0.0.1:9222" /></div>' +
+        '<div class="form-group" style="text-align:right;">' +
+        '<button type="button" class="btn-modal-save" id="eng-save-btn">Save Engine Settings</button></div>';
+      if (actions) { modal.insertBefore(sec, actions); } else { modal.appendChild(sec); }
+
+      var bg = document.getElementById('eng-btn-github');
+      var bl = document.getElementById('eng-btn-local');
+      bg.addEventListener('click', function () { applyEngine('github'); });
+      bl.addEventListener('click', function () { applyEngine('local'); });
+
+      document.getElementById('eng-save-btn').addEventListener('click', function () {
+        var api = window.pywebview && window.pywebview.api;
+        if (!api || !api.save_local_settings) { return; }
+        var headlessEl = document.getElementById('cfg-local-headless');
+        var cdpEl = document.getElementById('cfg-local-cdp');
+        api.save_local_settings(
+          engineState.engine,
+          !!(headlessEl && headlessEl.checked),
+          (cdpEl && cdpEl.value ? cdpEl.value.trim() : '')
+        ).then(function (res) {
+          if (res && res.success) {
+            applyEngine(res.engine || engineState.engine);
+            if (window.shellApp && window.shellApp.showToast) {
+              window.shellApp.showToast('Engine settings saved. Active: ' + (res.engine || engineState.engine), false, false);
+            }
+          } else if (window.shellApp && window.shellApp.showToast) {
+            window.shellApp.showToast('Engine settings error: ' + ((res && res.error) || 'unknown'), true, false);
+          }
+        }).catch(function () {});
+      });
+    }
+
+    // Load current engine state from Python and apply it
+    var api = window.pywebview && window.pywebview.api;
+    if (api && api.get_engine) {
+      api.get_engine().then(function (res) {
+        if (!res) { return; }
+        applyEngine(res.engine || 'github');
+        var hl = document.getElementById('cfg-local-headless');
+        if (hl && typeof res.local_headless !== 'undefined') { hl.checked = !!res.local_headless; }
+        var cd = document.getElementById('cfg-local-cdp');
+        if (cd && typeof res.local_cdp_url !== 'undefined') { cd.value = res.local_cdp_url || ''; }
+      }).catch(function () {});
+    } else {
+      applyEngine('github');
+    }
+  });
+})();
+</script>
+"""
+
+
 class OfflineBrowserUI:
     """
     PyWebView Shell, Action Queue UI, AJAX Trap & Deep DOM Interceptor.
@@ -184,7 +301,7 @@ class OfflineBrowserUI:
             if scroll_steps > 0:
                 details.append(f"{scroll_steps} scroll steps")
             msg_suffix = f" (with {' and '.join(details)} on the runner)..." if details else "..."
-            msg = f"Preparing and sending to GitHub{msg_suffix}"
+            msg = f"Preparing and sending via {self._engine_label()}{msg_suffix}"
             self._set_loading(True, msg)
 
             def on_status(msg):
@@ -229,7 +346,7 @@ class OfflineBrowserUI:
             if scroll_steps > 0:
                 details.append(f"{scroll_steps} scroll steps")
             msg_suffix = f" (with {' and '.join(details)} on the runner)..." if details else "..."
-            msg = f"Sending form data to GitHub{msg_suffix}"
+            msg = f"Sending form data via {self._engine_label()}{msg_suffix}"
             self._set_loading(True, msg)
 
             body_bytes = base64.b64decode(body_base64) if body_base64 else b""
@@ -275,7 +392,7 @@ class OfflineBrowserUI:
             if scroll_steps > 0:
                 details.append(f"{scroll_steps} scroll steps")
             msg_suffix = f" (with {' and '.join(details)})..." if details else "..."
-            msg = f"Replaying {len(actions)} actions on the runner{msg_suffix}"
+            msg = f"Replaying {len(actions)} actions via {self._engine_label()}{msg_suffix}"
             self._set_loading(True, msg)
 
             mode = "replay"
@@ -425,11 +542,59 @@ class OfflineBrowserUI:
     def go_home(self):
         self._call_js("window.shellApp.onPageLoaded('/start', '', 'Offline Start')")
 
-    # ---------------- HTML UI Templates ----------------
+    # ---------------- Engine management (Phase 2) ----------------
+
+    def _engine_label(self) -> str:
+        """Human-readable label of the active engine for status messages."""
+        return (
+            "Local (this machine)"
+            if getattr(self.transport, "name", "github") == "local"
+            else "GitHub (remote)"
+        )
+
+    def set_engine(self, name: str) -> Dict[str, Any]:
+        """
+        Switches the active fetch engine at runtime (Phase 2).
+
+        Builds a new engine through the Phase 0 factory and swaps it in place;
+        the rest of the UI (OfflineBrowserUI) keeps working untouched because
+        it only relies on the FetchEngine contract.
+        """
+        from .engine import create_engine  # local import keeps module import cycle-free
+
+        if name not in ("github", "local"):
+            return {"success": False, "error": f"Unknown engine: {name}"}
+
+        current = getattr(self.transport, "name", "github")
+        if name == current:
+            return {"success": True, "engine": current, "changed": False}
+
+        if self.is_busy:
+            return {
+                "success": False,
+                "error": "Busy: wait for the current request to finish before switching engines.",
+            }
+
+        try:
+            engine = create_engine(name, self.config, self.session_manager)
+        except Exception as e:
+            logger.error(f"Engine switch to '{name}' failed: {e}")
+            return {"success": False, "error": str(e)}
+
+        self.transport = engine
+        logger.info("Active engine switched to: %s", name)
+        return {"success": True, "engine": name, "changed": True}
+
     # ---------------- HTML UI Templates ----------------
     def _generate_shell_html(self) -> str:
         """Generates pure OLED black UI shell with white buttons and complete onPageLoaded handler."""
-        return generate_shell_html(self.config)
+        html = generate_shell_html(self.config)
+        # Phase 2: inject the engine-integration patch (status-bar badge +
+        # "Browsing Engine" section inside the Settings modal).
+        idx = html.rfind("</body>")
+        if idx != -1:
+            html = html[:idx] + _PHASE2_ENGINE_PATCH + html[idx:]
+        return html
 
     def _generate_start_page_html(self) -> str:
         """Generates the fixed scroll-free home screen with NTTM branding, the inverted halftone dot backdrop, and clean dark UI."""
