@@ -33,6 +33,9 @@ class BrowserConfig:
     downloads_dir: str = ""
     encryption_key: str = ""
     onboarding_completed: bool = False
+    # --- Local engine (Phase 1) ---
+    local_headless: bool = True
+    local_cdp_url: str = ""  # e.g. http://127.0.0.1:9222 to attach the user's running browser
 
     def __post_init__(self):
         if not self.downloads_dir:
@@ -79,6 +82,8 @@ class BrowserConfig:
                 downloads_dir=data.get("downloads_dir", ""),
                 encryption_key=data.get("encryption_key", ""),
                 onboarding_completed=bool(data.get("onboarding_completed", False)),
+                local_headless=bool(data.get("local_headless", True)),
+                local_cdp_url=data.get("local_cdp_url", ""),
             )
         except Exception as e:
             logger.warning(f"Failed to read config file: {e}. Returning default config.")
